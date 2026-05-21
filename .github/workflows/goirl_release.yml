@@ -163,63 +163,133 @@ jobs:
             -f addons/example/Dockerfile \
             addons/example
 
-      # ---- 5. Extract artifacts for a no-docker installation ----
-      - name: Extract wheel + web bundle into release tarball
+      # ---- 5. Build the portable bare-metal bundle ----
+      #
+      - name: Extract selkies wheel from selkies-py-build
+        run: |
+          set -euo pipefail
+          mkdir -p bundle-stage/wheel
+          CID="$(docker create selkies-py-build:latest)"
+          docker cp "${CID}:/opt/pypi/dist/." bundle-stage/wheel/
+          docker rm "${CID}" >/dev/null
+          ls -la bundle-stage/wheel/
+
+      - name: Build portable bundle (debian:12 venv with selkies + deps)
         id: bundle
         run: |
           set -euo pipefail
-          STAGE="$(mktemp -d)"
-          mkdir -p "${STAGE}/wheel" "${STAGE}/web"
+          TAG="${{ steps.ver.outputs.tag }}"
+          SEMVER="${{ steps.ver.outputs.semver }}"
+          BUNDLE_DIR_NAME="selkies-gstreamer-portable-${TAG}_amd64"
+          BUNDLE_NAME="${BUNDLE_DIR_NAME}.tar.gz"
 
-          # Pull the python wheel out of selkies-py-build
-          CID="$(docker create selkies-py-build:latest)"
-          docker cp "${CID}:/opt/pypi/dist/." "${STAGE}/wheel/"
-          docker rm "${CID}" >/dev/null
+          # Run the bundle build inside debian:12 so the venv's compiled wheels
+          # link against the same glibc/library set the GPU VM has.
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -w /work \
+            -e BUNDLE_DIR_NAME="${BUNDLE_DIR_NAME}" \
+            -e SEMVER="${SEMVER}" \
+            debian:12 \
+            bash -euxc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              # Build deps: python venv + native build chain for any sdist
+              # packages that lack manylinux wheels.
+              apt-get install -y --no-install-recommends \
+                python3 python3-venv python3-pip python3-dev \
+                build-essential pkg-config \
+                libffi-dev libssl-dev \
+                libsrtp2-dev libopus-dev libvpx-dev libavcodec-dev \
+                libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+                libxkbcommon-dev \
+                ca-certificates curl
 
-          # Pull the built web bundle out of selkies-web-core
-          CID="$(docker create selkies-web-core:latest)"
-          docker cp "${CID}:/usr/share/nginx/html/." "${STAGE}/web/"
-          docker rm "${CID}" >/dev/null
+              STAGE="/tmp/${BUNDLE_DIR_NAME}"
+              mkdir -p "${STAGE}"
 
-          # Drop a README inside the bundle explaining how to use it
-          cat > "${STAGE}/README.md" <<EOF
-          # goIRL streaming runtime — portable bundle
+              # 1. Build the venv inside the stage dir so paths are relative.
+              python3 -m venv "${STAGE}/venv"
+              # Pin pip + give ourselves a stable upgrade path. Use `--upgrade`
+              # so the bundled wheel of pip is current.
+              "${STAGE}/venv/bin/pip" install --no-cache-dir --upgrade pip setuptools wheel
 
-          Version: ${{ steps.ver.outputs.tag }}
+              # 2. Install the selkies wheel produced earlier in this job.
+              "${STAGE}/venv/bin/pip" install --no-cache-dir bundle-stage/wheel/*.whl
 
-          ## What's inside
+              # 3. Drop the launcher script ansible execs as
+              #    /opt/selkies/selkies-gstreamer-run. Activate the venv
+              #    relative to its own location so the directory can be
+              #    moved/renamed without breaking the run.
+              cat > "${STAGE}/selkies-gstreamer-run" <<'\''LAUNCH'\''
+#!/bin/bash
+# Portable launcher for the goIRL selkies build.
+# Resolves its own directory, activates the bundled venv, and
+# hands all CLI args off to `python -m selkies`.
 
-          - \`wheel/\`            — the \`selkies\` Python wheel (install with pip)
-          - \`web/\`              — the built web frontend (serve via nginx, Caddy, etc.)
-          - \`README.md\`         — this file
+set -eu
 
-          ## Recommended: run with Docker
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+VENV="${HERE}/venv"
 
-          The fastest way to get a working streamer is the prebuilt OCI image:
+if [ ! -x "${VENV}/bin/python" ]; then
+    echo "selkies-gstreamer-run: bundled venv not found at ${VENV}" >&2
+    exit 1
+fi
 
-              docker pull ${{ steps.repo.outputs.image }}:${{ steps.ver.outputs.tag }}
-              docker run --rm -p 8080:8080 ${{ steps.repo.outputs.image }}:${{ steps.ver.outputs.tag }}
+export VIRTUAL_ENV="${VENV}"
+export PATH="${VENV}/bin:${PATH}"
 
-          Then open <http://localhost:8080>.
+exec "${VENV}/bin/python" -m selkies "$@"
+LAUNCH
+              chmod +x "${STAGE}/selkies-gstreamer-run"
 
-          ## Bare-metal install (advanced)
+              # 4. Plain-text version file for ops diagnostics.
+              echo "${SEMVER}" > "${STAGE}/VERSION"
 
-          1. Install system deps (X11, GStreamer, xfce4, pulseaudio/pipewire) — see
-             \`addons/example/Dockerfile\` upstream for the canonical list.
-          2. \`pip install ./wheel/*.whl\`
-          3. Serve \`web/\` from your reverse proxy on the same origin as the selkies
-             WebSocket endpoint.
-          4. Start \`selkies\` (entrypoint installed by the wheel).
-          EOF
+              # 5. Concise README.
+              cat > "${STAGE}/README.md" <<README
+# goIRL — portable selkies bundle
 
-          BUNDLE="goirl-selkies-${{ steps.ver.outputs.tag }}.tar.gz"
-          tar -czf "${BUNDLE}" -C "${STAGE}" .
+Version: ${SEMVER} (amd64, Debian 12 ABI)
 
-          # Also surface the wheel directly so users can `pip install` it
-          cp "${STAGE}"/wheel/*.whl ./
-          ls -la "${BUNDLE}" *.whl
+## Layout
+- \`selkies-gstreamer-run\`  — executable launcher (matches the upstream name)
+- \`venv/\`                  — bundled Python virtualenv with selkies + deps
+- \`VERSION\`                — version string
 
-          echo "bundle=${BUNDLE}" >> "$GITHUB_OUTPUT"
+## Install (matches goirl_gcloud/ansible expectation)
+\`\`\`
+sudo install -d -o debian -g debian /opt/selkies
+sudo tar -xzf selkies-gstreamer-portable-v\${VERSION}_amd64.tar.gz \\
+    -C /opt/selkies --strip-components=1
+sudo chown -R debian:debian /opt/selkies
+\`\`\`
+
+The ansible playbook in goirl_gcloud already wires the systemd unit and
+runtime flags around this layout.
+
+## Required system packages
+This bundle ships the Python side only; the host must already provide the
+X11/GStreamer/PipeWire stack the playbook installs (see
+\`addons/example/Dockerfile\` for the exhaustive list).
+README
+
+              # 6. Pack. `tar -czf foo.tar.gz -C /tmp <dirname>` produces
+              #    foo.tar.gz with a single top-level directory equal to
+              #    <dirname>, which is what `--strip-components=1` consumes.
+              tar -C /tmp -czf "/work/${BUNDLE_DIR_NAME}.tar.gz" "${BUNDLE_DIR_NAME}"
+
+              # 7. Sanity check: the launcher boots and reports its CLI.
+              "${STAGE}/selkies-gstreamer-run" --help >/dev/null \
+                || { echo "selkies-gstreamer-run failed to start"; exit 1; }
+            '
+
+          # Surface the wheel separately for pip-only consumers
+          cp bundle-stage/wheel/*.whl ./
+          ls -la "${BUNDLE_NAME}" *.whl
+
+          echo "bundle=${BUNDLE_NAME}" >> "$GITHUB_OUTPUT"
           echo "wheel=$(ls *.whl | head -n1)" >> "$GITHUB_OUTPUT"
 
       # ---- 6. GitHub Release ----
@@ -243,12 +313,16 @@ jobs:
             Open <http://localhost:8080>. Default login is `ubuntu` / `mypasswd`
             (set `SELKIES_ENABLE_BASIC_AUTH=false` to skip the prompt).
 
-            ### Bare-metal artifacts
+            ### Bare-metal (Debian 12 / Ansible)
 
-            - **`goirl-selkies-${{ steps.ver.outputs.tag }}.tar.gz`** — wheel + web bundle
-            - **`*.whl`** — Python wheel only
+            - **`selkies-gstreamer-portable-${{ steps.ver.outputs.tag }}_amd64.tar.gz`**
+              — drop-in tarball, extracted into `/opt/selkies` by the
+              `goirl_gcloud/ansible/playbook.yml`. Contains a bundled venv,
+              the wheel, and a `selkies-gstreamer-run` launcher.
+            - **`*.whl`** — raw Python wheel for `pip install`.
 
-            See the README inside the tarball for install instructions.
+            See the README inside the tarball for the layout and install
+            command.
           files: |
             ${{ steps.bundle.outputs.bundle }}
             ${{ steps.bundle.outputs.wheel }}
