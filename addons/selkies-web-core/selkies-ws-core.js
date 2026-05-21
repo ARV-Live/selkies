@@ -10,6 +10,7 @@ import {
 import {
   Input
 } from './lib/input.js';
+import { attachLoadingOverlay } from './lib/loading-overlay.js';
 
 export default function websockets() {
 let decoder;
@@ -167,8 +168,9 @@ window.onload = () => {
 const urlForKey = window.location.href.split('#')[0];
 const storageAppName = urlForKey.replace(/[^a-zA-Z0-9.-_]/g, '_');
 
-// Set page title
-document.title = 'Selkies';
+// Set page title — default to the goIRL brand, then upgrade from manifest.json
+// if present. (The manifest's `name` is the source of truth in production.)
+document.title = 'goIRL';
 fetch('manifest.json')
   .then(response => response.json())
   .then(manifest => {
@@ -606,14 +608,8 @@ body {
   z-index: 5;
 }
 #playButton {
-  padding: 15px 30px;
-  font-size: 1.5em;
-  cursor: pointer;
-  background-color: rgba(0, 0, 0, 0.5);
-  color: white;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 3px;
-  backdrop-filter: blur(5px);
+  /* Customer-facing build: the Play Stream button is permanently hidden. */
+  display: none !important;
 }
 .video-container.shared-user-mode #overlayInput {
   cursor: default !important;
@@ -1032,6 +1028,11 @@ const initializeUI = () => {
   appDiv.appendChild(videoContainer);
   updateStatusDisplay();
   playButtonElement.addEventListener('click', playStream);
+
+  // Branded loading screen: Lottie animation of the goIRL logo while selkies
+  // connects. Mirrors statusDisplayElement.classList so existing show/hide
+  // call sites just work.
+  attachLoadingOverlay(videoContainer, statusDisplayElement);
 
   if (isSharedMode) {
       updateUIForSharedMode();

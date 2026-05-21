@@ -4,6 +4,7 @@ import GamepadVisualizer from "./GamepadVisualizer";
 import { getTranslator } from "../translations";
 import yaml from "js-yaml";
 import { getRoutePrefix } from "../utils.js";
+import goirlLogo from "../assets/logo.png";
 
 // --- Constants ---
 const urlHash = window.location.hash;
@@ -249,34 +250,15 @@ const SpinnerIcon = () => (
 );
 // --- End Icons ---
 
-const SelkiesLogo = ({ width = 30, height = 30, className, t, ...props }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 200 200"
-    width={width}
-    height={height}
+const SelkiesLogo = ({ width = 30, height = 30, className, ...props }) => (
+  <img
+    src={goirlLogo}
+    width={width * 5}
+    height={width * 5 * (200 / 640)}
     className={className}
-    role="img"
-    aria-label={t("selkiesLogoAlt")}
+    alt="goIRL"
     {...props}
-  >
-    <path
-      fill="#61dafb"
-      d="M156.825 120.999H5.273l-.271-1.13 87.336-43.332-7.278 17.696c4 1.628 6.179.541 7.907-2.974l26.873-53.575c1.198-2.319 3.879-4.593 6.358-5.401 9.959-3.249 20.065-6.091 30.229-8.634 1.9-.475 4.981.461 6.368 1.873 4.067 4.142 7.32 9.082 11.379 13.233 1.719 1.758 4.572 2.964 7.058 3.29 4.094.536 8.311.046 12.471.183 5.2.171 6.765 2.967 4.229 7.607-2.154 3.942-4.258 7.97-6.94 11.542-1.264 1.684-3.789 3.274-5.82 3.377-7.701.391-15.434.158-23.409 1.265 2.214 1.33 4.301 2.981 6.67 3.919 4.287 1.698 5.76 4.897 6.346 9.162 1.063 7.741 2.609 15.417 3.623 23.164.22 1.677-.464 3.971-1.579 5.233-3.521 3.987-7.156 7.989-11.332 11.232-2.069 1.607-5.418 1.565-8.664 2.27m-3.804-69.578c5.601.881 6.567-5.024 11.089-6.722l-9.884-7.716-11.299 9.983 10.094 4.455z"
-    />
-    <path
-      fill="#61dafb"
-      d="M86 131.92c7.491 0 14.495.261 21.467-.1 4.011-.208 6.165 1.249 7.532 4.832 1.103 2.889 2.605 5.626 4.397 9.419h-93.41l5.163 24.027-1.01.859c-3.291-2.273-6.357-5.009-9.914-6.733-11.515-5.581-17.057-14.489-16.403-27.286.073-1.423-.287-2.869-.525-5.019H86z"
-    />
-    <path
-      fill="#61dafb"
-      d="M129.004 164.999l1.179-1.424c9.132-10.114 9.127-10.11 2.877-22.425l-4.552-9.232c4.752 0 8.69.546 12.42-.101 11.96-2.075 20.504 1.972 25.74 13.014.826 1.743 2.245 3.205 3.797 5.361-9.923 7.274-19.044 15.174-29.357 20.945-4.365 2.443-11.236.407-17.714.407l5.611-6.545z"
-    />
-    <path
-      fill="#FFFFFF"
-      d="M152.672 51.269l-9.745-4.303 11.299-9.983 9.884 7.716c-4.522 1.698-5.488 7.602-11.439 6.57z"
-    />
-  </svg>
+  />
 );
 
 const INSTALLED_APPS_STORAGE_KEY = "prootInstalledApps";
@@ -560,8 +542,34 @@ function Sidebar() {
   const [isTouchGamepadSetup, setIsTouchGamepadSetup] = useState(false);
   const [availablePlacements, setAvailablePlacements] = useState(null);
   const [serverSettings, setServerSettings] = useState(null);
-  const [renderableSettings, setRenderableSettings] = useState({});
-  const [uiTitle, setUiTitle] = useState('Selkies');
+  // Defaults force the technical/developer-oriented sections off so the
+  // customer-facing UI never flashes them on while we wait for serverSettings.
+  const [renderableSettings, setRenderableSettings] = useState({
+    encoder: false,
+    encoder_rtc: false,
+    framerate: false,
+    jpeg_quality: false,
+    paint_over_jpeg_quality: false,
+    h264_crf: false,
+    h264PaintoverCRF: false,
+    usePaintOverQuality: false,
+    h264StreamingMode: false,
+    h264FullColor: false,
+    use_cpu: false,
+    video_bitrate: false,
+    audio_bitrate: false,
+    use_browser_cursors: false,
+    binaryClipboard: false,
+    uiScaling: false,
+    stats: false,
+    videoSettings: false,
+    enableDualMode: false,
+    enableRateControl: false,
+    apps: false,
+    sharing: false,
+    gamepads: false,
+  });
+  const [uiTitle, setUiTitle] = useState('goIRL');
   const [uiShowLogo, setUiShowLogo] = useState(true);
 
   useEffect(() => {
@@ -647,6 +655,37 @@ function Sidebar() {
     const ftSetting = s.file_transfers;
     newRenderable.fileUpload = ftSetting ? ftSetting.value.includes('upload') : true;
     newRenderable.fileDownload = ftSetting ? ftSetting.value.includes('download') : true;
+
+    // goIRL customer-facing mode: hide all technical/developer-oriented
+    // controls (codecs, CRF, bitrate sliders, raw stats, etc.) regardless of
+    // what the server advertises. End users see only the stream/audio/mic
+    // toggles plus screen, clipboard, files.
+    newRenderable.encoder = false;
+    newRenderable.encoder_rtc = false;
+    newRenderable.framerate = false;
+    newRenderable.jpeg_quality = false;
+    newRenderable.paint_over_jpeg_quality = false;
+    newRenderable.h264_crf = false;
+    newRenderable.h264PaintoverCRF = false;
+    newRenderable.usePaintOverQuality = false;
+    newRenderable.h264StreamingMode = false;
+    newRenderable.h264FullColor = false;
+    newRenderable.use_cpu = false;
+    newRenderable.video_bitrate = false;
+    newRenderable.audio_bitrate = false;
+    newRenderable.use_browser_cursors = false;
+    newRenderable.binaryClipboard = false;
+    newRenderable.uiScaling = false;
+    newRenderable.stats = false;
+    newRenderable.videoSettings = false;
+    newRenderable.enableDualMode = false;
+    newRenderable.enableRateControl = false;
+    // Customer-facing trim: Apps (proot-apps catalog), Sharing (multi-viewer
+    // links) and the gamepad visualizer aren't relevant for the goIRL
+    // streaming product. The gamepad toggle in the top action row stays.
+    newRenderable.apps = false;
+    newRenderable.sharing = false;
+    newRenderable.gamepads = false;
 
     setRenderableSettings(newRenderable);
   }, [serverSettings]);
@@ -2132,7 +2171,7 @@ function Sidebar() {
     <>
       {isToggleVisible && (
         <div
-          className='toggle-handle'
+          className={`toggle-handle ${isOpen ? 'is-open' : ''}`}
           onClick={toggleSidebar}
           title={`${isOpen ? 'Close' : 'Open'} Dashboard`}
         >
@@ -2193,22 +2232,10 @@ function Sidebar() {
       })()}
       <div className={sidebarClasses}>
           <div className="sidebar-header">
-            {uiShowLogo && (
-              <a
-                href="https://github.com/selkies-project/selkies"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <SelkiesLogo width={30} height={30} t={t} />
-              </a>
-            )}
-            <a
-              href="https://github.com/selkies-project/selkies"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <h2>{uiTitle}</h2>
-            </a>
+            <div className="brand-mark">
+              <img src={goirlLogo} alt="goIRL" className="brand-logo" />
+              <span className="brand-tagline">Stream Life. For Real.</span>
+            </div>
             <div className="header-controls">
             <div
               className={`theme-toggle ${theme}`}

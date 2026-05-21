@@ -1,0 +1,6 @@
+# Force LF line endings for shell scripts so they execute correctly when
+# baked into Linux container images on Windows checkouts.
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

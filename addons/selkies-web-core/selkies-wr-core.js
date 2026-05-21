@@ -29,6 +29,7 @@ import { WebRTCDemo } from "./lib/webrtc";
 import { WebRTCDemoSignaling } from "./lib/signaling";
 import { Input } from "./lib/input";
 import ClipboardWorker from './clipboard-worker.js?worker'
+import { attachLoadingOverlay } from "./lib/loading-overlay";
 
 function InitUI() {
 	let style = document.createElement('style');
@@ -121,14 +122,9 @@ function InitUI() {
 	}
 
 	#playButton {
-		padding: 15px 30px;
-		font-size: 1.5em;
-		cursor: pointer;
-		background-color: rgba(0, 0, 0, 0.5);
-		color: white;
-		border: 1px solid rgba(255, 255, 255, 0.3);
-		border-radius: 3px;
-		backdrop-filter: blur(5px);
+		/* Customer-facing build: the Play Stream button is permanently hidden;
+		   autoplay falls back to muted then unmutes on first user interaction. */
+		display: none !important;
 	`;
   document.head.appendChild(style);
 }
@@ -1509,6 +1505,11 @@ export default function webrtc() {
 			videoContainer.appendChild(overlayInput);
 			appDiv.appendChild(videoContainer);
 
+			// Branded loading screen: Lottie animation of the goIRL logo while
+			// selkies connects. The overlay watches statusDisplayElement.classList
+			// so it hides when the existing code path hides the status bar.
+			attachLoadingOverlay(videoContainer, statusDisplayElement);
+
 			if (!document.getElementById('keyboard-input-assist')) {
 				const keyboardInputAssist = document.createElement('input');
 				keyboardInputAssist.type = 'text';
@@ -1706,7 +1707,10 @@ export default function webrtc() {
 			}
 
 			webrtc.onplaystreamrequired = () => {
-				showStart = true;
+				// Customer-facing build never shows the "Play Stream" gate — the
+				// stream is already attempted muted-then-unmute-on-interaction by
+				// webrtc.playStream(). We simply log here for diagnostics.
+				console.log("[selkies] Autoplay required hook fired; waiting on user interaction to unmute.");
 			}
 
 			if (!isSharedMode) {

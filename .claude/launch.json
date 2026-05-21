@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "selkies-dashboard",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview", "--prefix", "addons/selkies-dashboard"],
+      "port": 4173
+    }
+  ]
+}

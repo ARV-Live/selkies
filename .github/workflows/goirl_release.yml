@@ -1,0 +1,243 @@
+# goIRL — customized selkies release workflow.
+#
+# What it does on a `vX.Y.Z` tag push (or manual run):
+#   1. Builds the locally-customized addon images:
+#        - selkies-web-core      (web-core + branded dashboard, lottie loader, etc.)
+#        - selkies-js-interposer (joystick passthrough .deb)
+#        - selkies-fake-udev     (fake libudev .deb)
+#        - selkies-py-build      (python wheel + bundled web frontend)
+#        - selkies-example       (full Ubuntu test container — the portable runtime)
+#   2. Pushes the example image to GHCR under
+#        ghcr.io/<owner>/<repo>:<version> and :latest
+#      — this is the "portable binary": pull + run on any Linux host with Docker.
+#   3. Extracts the python wheel and the built web bundle from the images and
+#      packs them into a release tarball for users that want to install on
+#      bare metal without Docker.
+#   4. Publishes a GitHub Release with the tarball attached and the docker
+#      pull command in the release notes.
+#
+# Trigger: push a tag like `v1.2.3` or run manually from the Actions tab.
+
+name: goIRL release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.2.3)"
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Linux distribution the example image is built on. Match the dev compose.
+  DISTRIB_IMAGE: ubuntu
+  DISTRIB_RELEASE: "24.04"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to create the GitHub Release + upload assets
+      packages: write   # to push to GHCR
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          # Use the tag if pushed, else the manual workflow_dispatch input.
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$ ]]; then
+            echo "::error::Tag '${TAG}' is not a valid vX.Y.Z[-suffix] version"
+            exit 1
+          fi
+          SEMVER="${TAG#v}"
+          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
+          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
+          echo "Building release ${TAG} (semver ${SEMVER})"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase repository owner for GHCR
+        id: repo
+        run: echo "image=${REGISTRY,,}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
+      # ---- 1. Build the web bundle (frontend) ----
+      - name: Build selkies-web-core
+        run: |
+          docker buildx build \
+            --load \
+            -t selkies-web-core:latest \
+            -f addons/selkies-web-core/Dockerfile \
+            addons
+
+      # ---- 2. Build the python wheel (includes the bundled web frontend) ----
+      - name: Build selkies-py-build (wheel + web)
+        run: |
+          docker buildx build \
+            --load \
+            -t selkies-py-build:latest \
+            --build-arg PYPI_PACKAGE=selkies \
+            --build-arg PACKAGE_VERSION=${{ steps.ver.outputs.semver }} \
+            -f Dockerfile \
+            .
+
+      # ---- 3. Build the joystick + fake-udev .deb images ----
+      - name: Build selkies-js-interposer
+        run: |
+          docker buildx build \
+            --load \
+            --target build \
+            -t selkies-js-interposer:main-${DISTRIB_IMAGE}${DISTRIB_RELEASE} \
+            --build-arg DISTRIB_IMAGE=${DISTRIB_IMAGE} \
+            --build-arg DISTRIB_RELEASE=${DISTRIB_RELEASE} \
+            --build-arg PKG_NAME=selkies-js-interposer \
+            --build-arg PKG_VERSION=0.0.0 \
+            -f addons/js-interposer/Dockerfile.debpkg \
+            addons/js-interposer
+
+      - name: Build selkies-fake-udev
+        run: |
+          docker buildx build \
+            --load \
+            -t selkies-fake-udev:main-${DISTRIB_IMAGE}${DISTRIB_RELEASE} \
+            --build-arg DISTRIB_IMAGE=${DISTRIB_IMAGE} \
+            --build-arg DISTRIB_RELEASE=${DISTRIB_RELEASE} \
+            --build-arg PKG_NAME=libudev \
+            --build-arg PKG_VERSION=0.0.0 \
+            -f addons/fake-udev/Dockerfile.debpkg \
+            addons/fake-udev
+
+      # ---- 4. Build & push the runtime image to GHCR ----
+      - name: Build & push selkies-example to GHCR
+        run: |
+          IMAGE="${{ steps.repo.outputs.image }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          docker buildx build \
+            --push \
+            -t "${IMAGE}:${TAG}" \
+            -t "${IMAGE}:latest" \
+            --build-arg DISTRIB_IMAGE=${DISTRIB_IMAGE} \
+            --build-arg DISTRIB_RELEASE=${DISTRIB_RELEASE} \
+            --build-arg PY_BUILD_IMAGE=selkies-py-build:latest \
+            --build-arg WEB_IMAGE=selkies-web-core:latest \
+            --build-arg JS_BASE_IMAGE=selkies-js-interposer \
+            --build-arg JS_BASE_IMAGE_RELEASE=main \
+            --build-arg LIBUDEV_IMAGE=selkies-fake-udev \
+            --build-arg LIBUDEV_IMAGE_RELEASE=main \
+            --build-arg PYPI_PACKAGE=selkies \
+            --build-arg PACKAGE_VERSION=${{ steps.ver.outputs.semver }} \
+            -f addons/example/Dockerfile \
+            addons/example
+
+      # ---- 5. Extract artifacts for a no-docker installation ----
+      - name: Extract wheel + web bundle into release tarball
+        id: bundle
+        run: |
+          set -euo pipefail
+          STAGE="$(mktemp -d)"
+          mkdir -p "${STAGE}/wheel" "${STAGE}/web"
+
+          # Pull the python wheel out of selkies-py-build
+          CID="$(docker create selkies-py-build:latest)"
+          docker cp "${CID}:/opt/pypi/dist/." "${STAGE}/wheel/"
+          docker rm "${CID}" >/dev/null
+
+          # Pull the built web bundle out of selkies-web-core
+          CID="$(docker create selkies-web-core:latest)"
+          docker cp "${CID}:/usr/share/nginx/html/." "${STAGE}/web/"
+          docker rm "${CID}" >/dev/null
+
+          # Drop a README inside the bundle explaining how to use it
+          cat > "${STAGE}/README.md" <<EOF
+          # goIRL streaming runtime — portable bundle
+
+          Version: ${{ steps.ver.outputs.tag }}
+
+          ## What's inside
+
+          - \`wheel/\`            — the \`selkies\` Python wheel (install with pip)
+          - \`web/\`              — the built web frontend (serve via nginx, Caddy, etc.)
+          - \`README.md\`         — this file
+
+          ## Recommended: run with Docker
+
+          The fastest way to get a working streamer is the prebuilt OCI image:
+
+              docker pull ${{ steps.repo.outputs.image }}:${{ steps.ver.outputs.tag }}
+              docker run --rm -p 8080:8080 ${{ steps.repo.outputs.image }}:${{ steps.ver.outputs.tag }}
+
+          Then open <http://localhost:8080>.
+
+          ## Bare-metal install (advanced)
+
+          1. Install system deps (X11, GStreamer, xfce4, pulseaudio/pipewire) — see
+             \`addons/example/Dockerfile\` upstream for the canonical list.
+          2. \`pip install ./wheel/*.whl\`
+          3. Serve \`web/\` from your reverse proxy on the same origin as the selkies
+             WebSocket endpoint.
+          4. Start \`selkies\` (entrypoint installed by the wheel).
+          EOF
+
+          BUNDLE="goirl-selkies-${{ steps.ver.outputs.tag }}.tar.gz"
+          tar -czf "${BUNDLE}" -C "${STAGE}" .
+
+          # Also surface the wheel directly so users can `pip install` it
+          cp "${STAGE}"/wheel/*.whl ./
+          ls -la "${BUNDLE}" *.whl
+
+          echo "bundle=${BUNDLE}" >> "$GITHUB_OUTPUT"
+          echo "wheel=$(ls *.whl | head -n1)" >> "$GITHUB_OUTPUT"
+
+      # ---- 6. GitHub Release ----
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## goIRL streaming — ${{ steps.ver.outputs.tag }}
+
+            ### Portable Docker image
+
+            ```
+            docker pull ${{ steps.repo.outputs.image }}:${{ steps.ver.outputs.tag }}
+            docker run --rm -p 8080:8080 ${{ steps.repo.outputs.image }}:${{ steps.ver.outputs.tag }}
+            ```
+
+            Open <http://localhost:8080>. Default login is `ubuntu` / `mypasswd`
+            (set `SELKIES_ENABLE_BASIC_AUTH=false` to skip the prompt).
+
+            ### Bare-metal artifacts
+
+            - **`goirl-selkies-${{ steps.ver.outputs.tag }}.tar.gz`** — wheel + web bundle
+            - **`*.whl`** — Python wheel only
+
+            See the README inside the tarball for install instructions.
+          files: |
+            ${{ steps.bundle.outputs.bundle }}
+            ${{ steps.bundle.outputs.wheel }}

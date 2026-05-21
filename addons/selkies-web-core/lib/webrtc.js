@@ -844,15 +844,46 @@ export class WebRTCDemo {
 	playStream() {
 		this.element.load();
 
-		var playPromise = this.element.play();
+		const tryPlay = () => this.element.play();
+		const armUnmuteOnInteraction = () => {
+			if (this._unmuteArmed) return;
+			this._unmuteArmed = true;
+			const unmute = () => {
+				this.element.muted = false;
+				this.element.play().catch(() => {});
+				window.removeEventListener('pointerdown', unmute, true);
+				window.removeEventListener('keydown', unmute, true);
+				window.removeEventListener('touchstart', unmute, true);
+				this._unmuteArmed = false;
+			};
+			window.addEventListener('pointerdown', unmute, { capture: true, once: true });
+			window.addEventListener('keydown', unmute, { capture: true, once: true });
+			window.addEventListener('touchstart', unmute, { capture: true, once: true });
+		};
+
+		var playPromise = tryPlay();
 		if (playPromise !== undefined) {
 			playPromise.then(() => {
 				this._setDebug("Stream is playing.");
 			}).catch(() => {
-				if (this.onplaystreamrequired !== null) {
-					this.onplaystreamrequired();
-				} else {
-					this._setDebug("Stream play failed and no onplaystreamrequired was bound.");
+				// Browser blocked autoplay (typically because audio is not muted and the
+				// user has not interacted yet). Fall back to a muted autoplay so the
+				// desktop becomes visible immediately, and unmute on the first user
+				// interaction. No "Play Stream" gate is shown to the customer.
+				this.element.muted = true;
+				const mutedPromise = tryPlay();
+				if (mutedPromise !== undefined) {
+					mutedPromise.then(() => {
+						this._setDebug("Stream is playing muted; will unmute on first interaction.");
+						armUnmuteOnInteraction();
+					}).catch(() => {
+						// Even muted autoplay failed — fall back to legacy "needs play" hook.
+						if (this.onplaystreamrequired !== null) {
+							this.onplaystreamrequired();
+						} else {
+							this._setDebug("Stream play failed and no onplaystreamrequired was bound.");
+						}
+					});
 				}
 			});
 		}
