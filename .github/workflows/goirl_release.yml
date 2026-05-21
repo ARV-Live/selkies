@@ -68,7 +68,18 @@ jobs:
           echo "Building release ${TAG} (semver ${SEMVER})"
 
       - name: Set up Docker Buildx
+        # Use the host docker daemon directly (driver: docker) instead of
+        # the default docker-container driver. Reason: we chain five image
+        # builds where each subsequent stage references the previous one
+        # by tag (e.g. `FROM selkies-web-core:latest`). The default isolated
+        # buildx builder can't see images that were `--load`ed into the host
+        # daemon, so it tries to pull them from Docker Hub and fails with
+        # `pull access denied`. The `docker` driver uses the host's image
+        # store, so cross-stage references resolve locally. The trade-off
+        # is no multi-platform builds — fine for our amd64-only release.
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
