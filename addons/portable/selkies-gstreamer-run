@@ -1,0 +1,24 @@
+#!/bin/bash
+# Portable launcher for the goIRL selkies build.
+#
+# Drop the bundle into any directory and execute this script — it resolves
+# its own location, activates the bundled Python virtualenv, and forwards
+# every CLI flag to `python -m selkies`. That keeps the goirl_gcloud
+# Ansible playbook's invocation (selkies-gstreamer-run --addr=... --port=...
+# --encoder=nvh264enc ...) wire-compatible with upstream's runner of the
+# same name.
+
+set -eu
+
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+VENV="${HERE}/venv"
+
+if [ ! -x "${VENV}/bin/python" ]; then
+    echo "selkies-gstreamer-run: bundled venv not found at ${VENV}" >&2
+    exit 1
+fi
+
+export VIRTUAL_ENV="${VENV}"
+export PATH="${VENV}/bin:${PATH}"
+
+exec "${VENV}/bin/python" -m selkies "$@"

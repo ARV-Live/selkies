@@ -1,0 +1,26 @@
+# goIRL — portable selkies bundle
+
+Version: __VERSION__ (amd64, Debian 12 ABI)
+
+## Layout
+- `selkies-gstreamer-run`  — executable launcher (matches the upstream name)
+- `venv/`                  — bundled Python virtualenv with selkies + deps
+- `VERSION`                — version string
+
+## Install (matches goirl_gcloud/ansible expectation)
+
+```
+sudo install -d -o debian -g debian /opt/selkies
+sudo tar -xzf selkies-gstreamer-portable-v__VERSION___amd64.tar.gz \
+    -C /opt/selkies --strip-components=1
+sudo chown -R debian:debian /opt/selkies
+```
+
+The Ansible playbook in `goirl_gcloud` already wires the systemd unit and
+runtime flags around this layout.
+
+## Required system packages
+
+This bundle ships the Python side only; the host must already provide the
+X11 / GStreamer / PipeWire stack the playbook installs (see
+`addons/example/Dockerfile` in the source tree for the exhaustive list).
